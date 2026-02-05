@@ -1,33 +1,66 @@
-# SLAYER - Enterprise Web Request Tool
+# SLAYER v2.0 - Professional Load Testing Tool
 
-🚀 Herramienta profesional de solicitudes HTTP de alto rendimiento con capacidades empresariales y optimización específica para **Kali Linux**.
+🚀 **Complete interface redesign** - No authorization required. Direct usage. Maximum efficiency.
 
-## 🐉 Optimizado para Kali Linux
+## ✨ What's New in v2.0
 
-SLAYER Enterprise ha sido **especialmente optimizado para Kali Linux** con configuraciones específicas, integración ética, y scripts de instalación automatizada.
+### 🔥 **Authorization-Free Experience**
+- **Removed all authorization systems** for frictionless usage
+- Direct URL-first syntax like HTTPie and wrk
+- No barriers between you and load testing
 
-### ⚡ Instalación Ultra-Rápida para Kali
+### 🎨 **Modern Interface**
+- Clean, minimal "SLAYER" banner
+- Real-time progress bars inspired by modern tools
+- HTTPie-style command syntax
+- Professional terminal styling
 
+### ⚡ **Enhanced for Security Professionals**
+- Optimized configuration for **Kali Linux**
+- Penetration testing workflow integration
+- Security assessment capabilities
+
+## 🚀 Ultra-Fast Installation
+
+### Kali Linux (Recommended)
 ```bash
 git clone https://github.com/kndys123/slayer.git
 cd slayer
-./install.sh  # Detecta Kali automáticamente y aplica configuración optimizada
+./kali_quickstart.sh  # Automatic Kali optimization
 ```
 
-### 🎯 Uso Simplificado en Kali
-
+### Other Systems
 ```bash
-# Wrapper específico para Kali con comandos simplificados
-./slayer help                     # Ver comandos específicos de Kali
-./slayer authorize https://target.com        # Autorizar objetivo
-./slayer quick-test https://target.com       # Prueba rápida (10 RPS, 30s)
-./slayer load-test https://target.com --rps 50 --duration 120
-./slayer profile moderate https://target.com # Usar perfil predefinido
+git clone https://github.com/kndys123/slayer.git
+cd slayer
+./setup.sh
 ```
 
-### 🔍 Verificación Completa del Sistema
+## ⚡ Instant Usage
 
+### Basic Load Testing
 ```bash
+# Quick test - just provide URL
+./slayer https://httpbin.org/get
+
+# Custom RPS and duration
+./slayer https://api.example.com -r 100 -t 60s
+
+# Different HTTP methods
+./slayer https://api.example.com --method POST -r 50
+```
+
+### Advanced Patterns
+```bash
+# Ramp up traffic gradually
+./slayer https://target.com --pattern ramp_up -r 200
+
+# Burst testing
+./slayer https://target.com --pattern burst
+
+# With custom config
+./slayer https://target.com --config config/kali_optimized.json
+```
 ./verify_kali.sh                 # Diagnóstico completo del sistema
 ./kali_quickstart.sh             # Guía interactiva para nuevos usuarios
 ```
