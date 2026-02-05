@@ -1,8 +1,45 @@
 # SLAYER - Enterprise Web Request Tool
 
-Herramienta profesional de solicitudes HTTP de alto rendimiento con capacidades empresariales.
+🚀 Herramienta profesional de solicitudes HTTP de alto rendimiento con capacidades empresariales y optimización específica para **Kali Linux**.
 
-## Instalacion Rapida
+## 🐉 Optimizado para Kali Linux
+
+SLAYER Enterprise ha sido **especialmente optimizado para Kali Linux** con configuraciones específicas, integración ética, y scripts de instalación automatizada.
+
+### ⚡ Instalación Ultra-Rápida para Kali
+
+```bash
+git clone https://github.com/kndys123/slayer.git
+cd slayer
+./install.sh  # Detecta Kali automáticamente y aplica configuración optimizada
+```
+
+### 🎯 Uso Simplificado en Kali
+
+```bash
+# Wrapper específico para Kali con comandos simplificados
+./slayer help                     # Ver comandos específicos de Kali
+./slayer authorize https://target.com        # Autorizar objetivo
+./slayer quick-test https://target.com       # Prueba rápida (10 RPS, 30s)
+./slayer load-test https://target.com --rps 50 --duration 120
+./slayer profile moderate https://target.com # Usar perfil predefinido
+```
+
+### 🔍 Verificación Completa del Sistema
+
+```bash
+./verify_kali.sh                 # Diagnóstico completo del sistema
+./kali_quickstart.sh             # Guía interactiva para nuevos usuarios
+```
+
+**Características específicas de Kali Linux:**
+- 🔒 **Modo Ético Activado**: Configuración por defecto con salvaguardas de seguridad
+- 🛡️ **Autorización Obligatoria**: Sistema de verificación de objetivos antes de cualquier prueba
+- 📊 **Dashboard Integrado**: Panel de control en tiempo real para monitoreo
+- 🔄 **Distribución de Carga**: Coordinación automática entre múltiples instancias
+- 📈 **SLO Monitoring**: Alertas automáticas y límites de seguridad
+
+## Instalacion Rapida (Otros Sistemas)
 
 ### Linux / macOS / Kali Linux
 
@@ -115,6 +152,40 @@ slayer/
 └── docs/                        # Documentacion
 ```
 
+## 🐉 Integración con Herramientas de Kali Linux
+
+SLAYER Enterprise está diseñado para complementar perfectamente las herramientas de penetration testing de Kali Linux:
+
+### 🔗 Integración Nativa
+```bash
+# Combinar con reconocimiento de Nmap
+nmap -sS -O target.com | grep -E '^[0-9]+/tcp' > ports.txt
+./slayer load-test https://target.com:$(cat ports.txt | head -1 | cut -d'/' -f1)
+
+# Usar resultados de dirb/gobuster para testing de endpoints
+dirb https://target.com /usr/share/wordlists/dirb/common.txt | grep "+" | awk '{print $2}' | while read endpoint; do
+    ./slayer quick-test "$endpoint" --method GET
+done
+
+# Integración con SQLMap para testing de inyección
+./slayer authorize https://target.com/api/login
+./slayer load-test https://target.com/api/login --method POST --data "username=admin&password=test" --check-sql-errors
+```
+
+### 🛡️ Características de Seguridad para Pentesting
+- **Rate Limiting Inteligente**: Evita detección por WAF
+- **HTTP Header Randomization**: User-Agent, Accept, Referer aleatorios  
+- **Proxy Chain Support**: Integración con Tor y proxychains
+- **Session Management**: Manejo automático de cookies y tokens
+- **SSL/TLS Configuration**: Testing de configuraciones SSL débiles
+
+### 📊 Reportes Específicos para Auditoría
+```bash
+# Generar reporte completo de security testing
+./slayer security-audit https://target.com --output kali-report.json
+./slayer generate-report kali-report.json --format pdf --template pentest
+```
+
 ## Ejemplos Rapidos
 
 ### Solicitud GET Simple
@@ -196,6 +267,53 @@ Para documentacion completa:
 ```bash
 cat GUIA_USO.md
 ```
+
+## 🐉 Recursos Específicos de Kali Linux
+
+### 📋 Verificación Completa del Sistema
+```bash
+# Verificar instalación y configuración completa
+./verify_kali.sh
+```
+
+### 🚀 Guía Interactiva para Principiantes
+```bash
+# Proceso interactivo paso a paso
+./kali_quickstart.sh
+```
+
+### 📚 Documentación Específica de Kali
+- `KALI_GUIDE.md` - Guía completa de uso en Kali Linux
+- `config/kali_optimized.json` - Configuración optimizada para Kali
+- Configuración por defecto en **modo ético** con salvaguardas
+
+### ⚡ Comandos de Inicio Rápido para Kali
+```bash
+# Autorización de objetivo (obligatorio)
+./slayer authorize https://target-autorizado.com
+
+# Pruebas básicas de carga
+./slayer quick-test https://target-autorizado.com
+./slayer load-test https://target-autorizado.com --rps 25 --duration 60
+
+# Perfiles predefinidos para diferentes tipos de testing
+./slayer profile light https://target.com      # Testing ligero (5 RPS)
+./slayer profile moderate https://target.com   # Testing moderado (25 RPS)  
+./slayer profile intensive https://target.com  # Testing intensivo (50 RPS)
+
+# Dashboard en tiempo real
+./slayer dashboard  # http://localhost:8000
+```
+
+### 🔒 Consideraciones Éticas para Kali Linux
+
+**IMPORTANTE**: SLAYER está configurado con salvaguardas específicas en Kali Linux:
+- ✅ **Autorización Obligatoria**: No se ejecutan pruebas sin verificación de autorización
+- ✅ **Límites de Seguridad**: Rate limiting automático para evitar ataques DoS accidentales
+- ✅ **SLO Monitoring**: Parada automática si se detectan anomalías en el objetivo
+- ✅ **Logs Auditables**: Registro completo de todas las actividades para auditoría
+
+**Solo usar contra objetivos autorizados para pentesting legítimo**
 - Check network connectivity
 - Ensure the target allows incoming connections
 - Verify firewall rules

@@ -4,14 +4,15 @@
 # Si solo usas la version base, solo necesitas:
 requests>=2.31.0
 
-# === ENTERPRISE (Para slayer_enterprise/) ===
-# Instala todas estas dependencias para funcionalidad completa:
+# === ENTERPRISE ENHANCED (Para slayer_enterprise/) ===
+# Framework completo de load testing con todas las funcionalidades avanzadas:
 
 # Core HTTP async
 aiohttp>=3.9.0
 certifi>=2023.11.17
+websockets>=11.0.2
 
-# Security & Authentication
+# Security & Authentication  
 pyjwt>=2.8.0
 cryptography>=41.0.7
 
@@ -28,6 +29,25 @@ rich>=13.7.0
 
 # Validacion de datos
 pydantic>=2.5.0
+
+# Data analysis and statistics
+numpy>=1.24.0
+statistics3>=3.8.1
+
+# Network and DNS utilities
+dnspython>=2.4.2
+
+# Web dashboard
+fastapi>=0.104.0
+uvicorn>=0.24.0
+jinja2>=3.1.2
+
+# System monitoring
+psutil>=5.9.6
+
+# Data serialization
+dataclasses-json>=0.6.1
+typing-extensions>=4.8.0
 
 # === TESTING (Opcional - Solo para desarrollo) ===
 pytest>=7.4.3
