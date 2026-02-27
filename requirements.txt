@@ -1,71 +1,30 @@
-# SLAYER - Requisitos de Dependencias
+# SLAYER - Dependencies
 
-# === BASICO (Solo para slayer.py) ===
-# Si solo usas la version base, solo necesitas:
+# === Core ===
 requests>=2.31.0
-
-# === ENTERPRISE ENHANCED (Para slayer_enterprise/) ===
-# Framework completo de load testing con todas las funcionalidades avanzadas:
-
-# Core HTTP async
-aiohttp>=3.9.0
-certifi>=2023.11.17
-websockets>=11.0.2
-
-# Security & Authentication  
-pyjwt>=2.8.0
-cryptography>=41.0.7
-
-# Performance & Caching
-redis>=5.0.1
-aioredis>=2.0.1
-
-# Monitoring & Metrics
-prometheus-client>=0.19.0
-
-# CLI moderna
 click>=8.1.7
 rich>=13.7.0
 
-# Validacion de datos
+# === Async engine ===
+aiohttp>=3.9.0
+
+# === Enterprise features ===
+certifi>=2023.11.17
+pyjwt>=2.8.0
+cryptography>=41.0.7
 pydantic>=2.5.0
-
-# Data analysis and statistics
-numpy>=1.24.0
-statistics3>=3.8.1
-
-# Network and DNS utilities
-dnspython>=2.4.2
-
-# Web dashboard
-fastapi>=0.104.0
-uvicorn>=0.24.0
-jinja2>=3.1.2
-
-# System monitoring
-psutil>=5.9.6
-
-# Data serialization
-dataclasses-json>=0.6.1
 typing-extensions>=4.8.0
 
-# === TESTING (Opcional - Solo para desarrollo) ===
-pytest>=7.4.3
-pytest-asyncio>=0.23.2
-pytest-cov>=4.1.0
-pytest-mock>=3.12.0
-aioresponses>=0.7.6
+# === Optional: caching ===
+# redis>=5.0.1
+# aioredis>=2.0.1
 
-# === DESARROLLO (Opcional - Solo para contribuidores) ===
-black>=23.12.1
-flake8>=7.0.0
-mypy>=1.7.1
-isort>=5.13.2
+# === Optional: monitoring ===
+# prometheus-client>=0.19.0
 
-# === DOCUMENTACION (Opcional) ===
-sphinx>=7.2.6
-sphinx-rtd-theme>=2.0.0
-
-# === OPTIMIZACIONES (Opcional - Mejora rendimiento) ===
-uvloop>=0.19.0   # Event loop mas rapido (Linux/macOS)
-orjson>=3.9.10   # JSON mas rapido
+# === Optional: testing ===
+# pytest>=7.4.3
+# pytest-asyncio>=0.23.2
+# pytest-cov>=4.1.0
+# pytest-mock>=3.12.0
+# aioresponses>=0.7.6

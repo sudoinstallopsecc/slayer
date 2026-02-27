@@ -1,2 +1,4 @@
-# Solo dependencias basicas para slayer.py
+# Minimal dependencies for slayer.py (sync engine only)
 requests>=2.31.0
+click>=8.1.7
+rich>=13.7.0

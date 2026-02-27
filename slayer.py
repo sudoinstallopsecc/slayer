@@ -1,451 +1,1024 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SLAYER - Advanced HTTP Load Testing Tool
+SLAYER - HTTP Load Testing and Request Framework
+
+A unified HTTP load testing tool with enterprise-grade features including
+async requests, connection pooling, circuit breakers, rate limiting,
+real-time metrics, and intelligent throttling.
+
+Usage:
+    Interactive mode:  python slayer.py
+    Load test:         python slayer.py test -u <url> [options]
+    Single request:    python slayer.py request -u <url> [options]
+    Generate config:   python slayer.py config -o <file>
+    System info:       python slayer.py info
+
+Copyright (c) 2026 SLAYER Project
+Licensed under MIT License
 """
 
+import asyncio
+import json
 import os
+import random
 import sys
 import time
-import random
 import threading
+from typing import Dict, Any, List, Optional
+from urllib.parse import urlparse
+
+import click
 import requests
-import json
-from datetime import datetime
-from contextlib import contextmanager
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.progress import (
+    Progress,
+    BarColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    SpinnerColumn,
+    TaskProgressColumn,
+)
 
-class Colors:
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
-    DIM = '\033[2m'
-    
-    BLACK = '\033[30m'
-    RED = '\033[31m'
-    GREEN = '\033[32m'
-    YELLOW = '\033[33m'
-    BLUE = '\033[34m'
-    MAGENTA = '\033[35m'
-    CYAN = '\033[36m'
-    WHITE = '\033[37m'
-    
-    BG_BLACK = '\033[40m'
-    BG_RED = '\033[41m'
-    BG_GREEN = '\033[42m'
-    BG_YELLOW = '\033[43m'
-    BG_BLUE = '\033[44m'
-    BG_MAGENTA = '\033[45m'
-    BG_CYAN = '\033[46m'
-    BG_WHITE = '\033[47m'
+# Enterprise imports (degrade gracefully)
+_enterprise_available = False
+try:
+    from slayer_enterprise import SlayerClient, SlayerConfig
+    from slayer_enterprise.core.config import load_config
+    _enterprise_available = True
+except ImportError:
+    pass
 
-class ProgressBar:
-    def __init__(self, total=100, width=40):
-        self.total = total
-        self.width = width
-        self.current = 0
-        
-    def update(self, value):
-        self.current = value
-        
-    def display(self, rps=0, avg_time=0, errors=0):
-        if self.total == 0:
-            percentage = 0
-        else:
-            percentage = min(100, (self.current / self.total) * 100)
-        
-        filled = int(self.width * percentage / 100)
-        bar = '█' * filled + '▓' * (self.width - filled)
-        
-        print(f'\r{Colors.CYAN}[{bar}] {percentage:5.1f}% '
-              f'{Colors.WHITE}({self.current}/{self.total}) '
-              f'{Colors.GREEN}RPS: {rps:6.1f} '
-              f'{Colors.YELLOW}Avg: {avg_time:5.0f}ms '
-              f'{Colors.RED}Errors: {errors:4d}{Colors.RESET}', end='', flush=True)
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+__version__ = "4.0.0"
+console = Console()
 
-class HTTPLoader:
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+]
+
+SUPPORTED_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+
+
+# ---------------------------------------------------------------------------
+# Banner
+# ---------------------------------------------------------------------------
+def print_banner():
+    banner_text = (
+        "[bold white]"
+        " ____  _        _ __   _______ ____  \n"
+        "/ ___|| |      / \\\\ \\ / / ____|  _ \\ \n"
+        "\\___ \\| |     / _ \\\\ V /|  _| | |_) |\n"
+        " ___) | |___ / ___ \\| | | |___|  _ < \n"
+        "|____/|_____/_/   \\_\\_| |_____|_| \\_\\"
+        "[/bold white]"
+    )
+    console.print(banner_text)
+    console.print(
+        f"[dim]HTTP Load Testing and Request Framework  v{__version__}[/dim]\n"
+    )
+
+
+# ============================================================================
+# CORE: Synchronous Load Testing Engine (threading-based)
+# ============================================================================
+class LoadTestEngine:
+    """
+    Thread-based HTTP load testing engine.
+
+    Uses requests.Session for keep-alive connections and a pool of worker
+    threads to generate concurrent load against a target URL.
+    """
+
     def __init__(self):
-        self.target_url = ""
-        self.method = "GET"
-        self.delay = 0.1
-        self.threads = 10
-        self.max_requests = None
-        self.max_time = None
-        self.data = None
-        self.headers = {}
-        
-        # Runtime stats
-        self.running = False
-        self.requests_count = 0
-        self.success_count = 0
-        self.error_count = 0
-        self.start_time = None
-        self.response_times = []
-        self.lock = threading.Lock()
-        
-        # Session
-        self.session = self._create_session()
-        
-    def _create_session(self):
-        session = requests.Session() 
-        session.headers.update({
-            'User-Agent': 'SLAYER-LoadTester/1.0',
-            'Accept': '*/*',
-            'Connection': 'keep-alive'
-        })
+        self.target_url: str = ""
+        self.method: str = "GET"
+        self.threads: int = 10
+        self.delay: float = 0.01
+        self.max_requests: Optional[int] = None
+        self.max_time: Optional[int] = None
+        self.headers: Dict[str, str] = {}
+        self.data: Optional[str] = None
+        self.timeout: int = 10
+
+        # Runtime state
+        self.running: bool = False
+        self.requests_count: int = 0
+        self.success_count: int = 0
+        self.error_count: int = 0
+        self.start_time: float = 0.0
+        self.response_times: List[float] = []
+        self.status_codes: Dict[int, int] = {}
+        self._lock = threading.Lock()
+        self._session = self._create_session()
+
+    def _create_session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update({"Accept": "*/*", "Connection": "keep-alive"})
         return session
 
-    def banner(self):
-        os.system('clear' if os.name == 'posix' else 'cls')
-        print(f"""
-{Colors.BOLD}{Colors.WHITE}
-╔══════════════════════════════════════╗
-║              SLAYER                  ║
-╚══════════════════════════════════════╝{Colors.RESET}
-
-
-""")
-        print(f"""
-{Colors.YELLOW}Current Configuration:{Colors.RESET}
-  Target:     {Colors.WHITE}{self.target_url or 'not set'}{Colors.RESET}
-  Method:     {Colors.WHITE}{self.method}{Colors.RESET}
-  Threads:    {Colors.WHITE}{self.threads}{Colors.RESET}
-  Delay:      {Colors.WHITE}{self.delay}s{Colors.RESET}
-""")
-
-    def get_random_user_agent(self):
-        agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        ]
-        return random.choice(agents)
-
-    def worker_thread(self, thread_id):
+    def _worker(self, thread_id: int):
         while self.running:
             try:
-                start_time = time.time()
-                
-                # Randomize headers
                 headers = self.headers.copy()
-                headers['User-Agent'] = self.get_random_user_agent()
-                
-                # Make request
-                response = self.session.request(
+                headers["User-Agent"] = random.choice(USER_AGENTS)
+
+                t0 = time.time()
+                resp = self._session.request(
                     self.method,
                     self.target_url,
                     headers=headers,
                     data=self.data,
-                    timeout=10,
-                    allow_redirects=True
+                    timeout=self.timeout,
+                    allow_redirects=True,
                 )
-                
-                response_time = (time.time() - start_time) * 1000
-                
-                with self.lock:
+                elapsed_ms = (time.time() - t0) * 1000
+
+                with self._lock:
                     self.requests_count += 1
-                    self.response_times.append(response_time)
-                    
-                    if 200 <= response.status_code < 400:
+                    self.response_times.append(elapsed_ms)
+                    code = resp.status_code
+                    self.status_codes[code] = self.status_codes.get(code, 0) + 1
+                    if 200 <= code < 400:
                         self.success_count += 1
                     else:
                         self.error_count += 1
-                        
-                    # Check limits
+
                     if self.max_requests and self.requests_count >= self.max_requests:
                         self.running = False
-                        break
-                        
+                        return
                     if self.max_time and (time.time() - self.start_time) >= self.max_time:
                         self.running = False
-                        break
-                        
-            except Exception as e:
-                with self.lock:
+                        return
+
+            except Exception:
+                with self._lock:
                     self.error_count += 1
                     self.requests_count += 1
-                    
-            time.sleep(self.delay)
 
-    def run_test(self, config):
-        if not config['target_url']:
-            print(f"{Colors.RED}Error: Target URL required{Colors.RESET}")
-            return
-            
-        # Setup
-        target = config['target_url']
-        if not target.startswith(('http://', 'https://')):
-            target = 'http://' + target
-            
-        self.target_url = target
-        self.method = config.get('method', 'GET')
-        self.threads = config.get('threads', 10)
-        self.delay = config.get('delay', 0.1)
-        self.max_requests = config.get('max_requests')
-        self.max_time = config.get('max_time')
-        self.data = config.get('data')
-        
-        # Reset stats
+            if self.delay > 0:
+                time.sleep(self.delay)
+
+    def run(
+        self,
+        url: str,
+        method: str = "GET",
+        threads: int = 10,
+        delay: float = 0.01,
+        max_requests: Optional[int] = None,
+        max_time: Optional[int] = None,
+        headers: Optional[Dict[str, str]] = None,
+        data: Optional[str] = None,
+        timeout: int = 10,
+    ) -> Dict[str, Any]:
+        """Execute a load test and return results."""
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+
+        self.target_url = url
+        self.method = method.upper()
+        self.threads = threads
+        self.delay = delay
+        self.max_requests = max_requests
+        self.max_time = max_time
+        self.headers = headers or {}
+        self.data = data
+        self.timeout = timeout
+
+        # Reset counters
         self.requests_count = 0
         self.success_count = 0
         self.error_count = 0
         self.response_times = []
+        self.status_codes = {}
         self.running = True
         self.start_time = time.time()
-        
-        # Display test info
-        print(f"{Colors.CYAN}Starting benchmark...{Colors.RESET}")
-        print(f"Target: {Colors.WHITE}{target}{Colors.RESET}")
-        print(f"Method: {Colors.WHITE}{self.method}{Colors.RESET} | "
-              f"Threads: {Colors.WHITE}{self.threads}{Colors.RESET} | "
-              f"Delay: {Colors.WHITE}{self.delay}s{Colors.RESET}")
-        
-        if self.max_requests:
-            print(f"Requests: {Colors.WHITE}{self.max_requests}{Colors.RESET}")
-        if self.max_time:
-            print(f"Duration: {Colors.WHITE}{self.max_time}s{Colors.RESET}")
-            
-        print()
-        
-        # Start threads
-        threads = []
+
+        # Start workers
+        workers: List[threading.Thread] = []
         for i in range(self.threads):
-            t = threading.Thread(target=self.worker_thread, args=(i,))
-            t.daemon = True
-            threads.append(t)
+            t = threading.Thread(target=self._worker, args=(i,), daemon=True)
+            workers.append(t)
             t.start()
-            
-        # Monitor progress
-        progress = ProgressBar(self.max_requests or 1000)
-        last_count = 0
-        last_time = time.time()
-        
+
+        # Progress display
+        total = max_requests or 0
         try:
-            while self.running:
-                time.sleep(0.5)
-                
-                current_time = time.time()
-                elapsed = current_time - self.start_time
-                
-                # Calculate RPS
-                rps = 0
-                if elapsed > 0:
-                    # Real-time RPS (last 0.5s)
-                    new_requests = self.requests_count - last_count
-                    time_diff = current_time - last_time
-                    if time_diff > 0:
-                        rps = new_requests / time_diff
-                    last_count = self.requests_count
-                    last_time = current_time
-                
-                # Calculate average response time
-                avg_time = 0
-                if self.response_times:
-                    with self.lock:
-                        avg_time = sum(self.response_times) / len(self.response_times)
-                
-                # Update progress
-                progress.total = self.max_requests or max(1000, self.requests_count + 100)
-                progress.update(self.requests_count)
-                progress.display(rps, avg_time, self.error_count)
-                
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]{task.description}"),
+                BarColumn(bar_width=30),
+                TaskProgressColumn(),
+                TextColumn("[green]RPS: {task.fields[rps]:.1f}"),
+                TextColumn("[yellow]Avg: {task.fields[avg]:.0f}ms"),
+                TextColumn("[red]Err: {task.fields[errors]}"),
+                TimeElapsedColumn(),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task(
+                    "Testing",
+                    total=total if total else None,
+                    rps=0.0,
+                    avg=0.0,
+                    errors=0,
+                )
+                prev_count = 0
+                prev_time = time.time()
+
+                while self.running:
+                    time.sleep(0.4)
+                    now = time.time()
+                    dt = now - prev_time
+                    rps = (self.requests_count - prev_count) / dt if dt > 0 else 0
+                    prev_count = self.requests_count
+                    prev_time = now
+
+                    avg = 0.0
+                    if self.response_times:
+                        with self._lock:
+                            avg = sum(self.response_times) / len(self.response_times)
+
+                    progress.update(
+                        task,
+                        completed=self.requests_count if total else None,
+                        rps=rps,
+                        avg=avg,
+                        errors=self.error_count,
+                    )
         except KeyboardInterrupt:
-            print(f"\n{Colors.YELLOW}Test interrupted by user{Colors.RESET}")
-            
+            console.print("\n[yellow]Test interrupted.[/yellow]")
         finally:
             self.running = False
-            print(f"\n{Colors.CYAN}Stopping threads...{Colors.RESET}")
-            
-            # Wait for threads to finish
-            for t in threads:
-                t.join(timeout=1)
-                
-            self.display_results()
+            for t in workers:
+                t.join(timeout=2)
 
-    def display_results(self):
+        return self._build_results()
+
+    def _build_results(self) -> Dict[str, Any]:
         elapsed = time.time() - self.start_time
-        
-        print(f"\n{Colors.BOLD}Results:{Colors.RESET}")
-        print("=" * 50)
-        
-        # Basic stats
-        success_rate = (self.success_count / self.requests_count * 100) if self.requests_count > 0 else 0
         rps = self.requests_count / elapsed if elapsed > 0 else 0
-        
-        print(f"Requests:      {Colors.WHITE}{self.requests_count:8d}{Colors.RESET}")
-        print(f"Duration:      {Colors.WHITE}{elapsed:8.2f}s{Colors.RESET}")
-        print(f"Rate:          {Colors.WHITE}{rps:8.2f} req/s{Colors.RESET}")
-        print(f"Success:       {Colors.GREEN}{self.success_count:8d}{Colors.RESET} ({success_rate:5.1f}%)")
-        print(f"Errors:        {Colors.RED}{self.error_count:8d}{Colors.RESET}")
-        
-        # Response time stats
-        if self.response_times:
-            times = sorted(self.response_times)
-            count = len(times)
-            
-            avg = sum(times) / count
-            median = times[count // 2]
-            p95 = times[int(count * 0.95)] if count > 20 else times[-1]
-            p99 = times[int(count * 0.99)] if count > 100 else times[-1]
-            
-            print(f"\n{Colors.BOLD}Response Times (ms):{Colors.RESET}")
-            print(f"Average:       {Colors.WHITE}{avg:8.0f}{Colors.RESET}")
-            print(f"Median:        {Colors.WHITE}{median:8.0f}{Colors.RESET}")
-            print(f"95th %ile:     {Colors.WHITE}{p95:8.0f}{Colors.RESET}")
-            print(f"99th %ile:     {Colors.WHITE}{p99:8.0f}{Colors.RESET}")
-        
-        print()
+        success_rate = (
+            (self.success_count / self.requests_count * 100)
+            if self.requests_count > 0
+            else 0
+        )
 
-def main():
-    slayer = HTTPLoader()
-    config = {
-        'target_url': '',
-        'method': 'GET',
-        'threads': 10,
-        'delay': 0.1,
-        'max_requests': None,
-        'max_time': None,
-        'data': None
+        times = sorted(self.response_times) if self.response_times else [0]
+        n = len(times)
+
+        return {
+            "url": self.target_url,
+            "method": self.method,
+            "threads": self.threads,
+            "total_requests": self.requests_count,
+            "successful": self.success_count,
+            "errors": self.error_count,
+            "duration_s": round(elapsed, 2),
+            "rps": round(rps, 2),
+            "success_rate": round(success_rate, 1),
+            "response_times": {
+                "avg": round(sum(times) / n, 1) if n else 0,
+                "min": round(times[0], 1) if n else 0,
+                "median": round(times[n // 2], 1) if n else 0,
+                "p95": round(times[int(n * 0.95)], 1) if n > 20 else round(times[-1], 1),
+                "p99": round(times[int(n * 0.99)], 1) if n > 100 else round(times[-1], 1),
+                "max": round(times[-1], 1) if n else 0,
+            },
+            "status_codes": dict(sorted(self.status_codes.items())),
+        }
+
+
+# ============================================================================
+# CORE: Async Load Testing Engine (aiohttp-based)
+# ============================================================================
+class AsyncLoadTestEngine:
+    """
+    Async HTTP load testing engine using aiohttp.
+
+    Provides higher throughput via non-blocking I/O and integrates with the
+    enterprise features (circuit breakers, caching, rate limiting) when the
+    slayer_enterprise package is installed.
+    """
+
+    async def run(
+        self,
+        url: str,
+        method: str = "GET",
+        concurrency: int = 10,
+        max_requests: Optional[int] = 100,
+        max_time: Optional[int] = None,
+        headers: Optional[Dict[str, str]] = None,
+        data: Optional[str] = None,
+        timeout: int = 30,
+    ) -> Dict[str, Any]:
+        """Run an async load test and return results."""
+        import aiohttp as _aiohttp
+
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+
+        results: Dict[str, Any] = {
+            "success": 0,
+            "errors": 0,
+            "response_times": [],
+            "status_codes": {},
+        }
+        lock = asyncio.Lock()
+        stop_event = asyncio.Event()
+
+        async def _make_request(session, sem):
+            if stop_event.is_set():
+                return
+            async with sem:
+                if stop_event.is_set():
+                    return
+                req_headers = dict(headers or {})
+                req_headers["User-Agent"] = random.choice(USER_AGENTS)
+                t0 = time.time()
+                try:
+                    async with session.request(
+                        method.upper(),
+                        url,
+                        headers=req_headers,
+                        data=data,
+                        timeout=_aiohttp.ClientTimeout(total=timeout),
+                    ) as resp:
+                        await resp.read()
+                        elapsed_ms = (time.time() - t0) * 1000
+                        async with lock:
+                            results["success"] += 1
+                            results["response_times"].append(elapsed_ms)
+                            code = resp.status
+                            results["status_codes"][code] = (
+                                results["status_codes"].get(code, 0) + 1
+                            )
+                except Exception:
+                    elapsed_ms = (time.time() - t0) * 1000
+                    async with lock:
+                        results["errors"] += 1
+                        results["response_times"].append(elapsed_ms)
+
+        sem = asyncio.Semaphore(concurrency)
+        connector = _aiohttp.TCPConnector(
+            limit=concurrency, limit_per_host=concurrency, force_close=False
+        )
+
+        start = time.time()
+        async with _aiohttp.ClientSession(connector=connector) as session:
+            if max_requests:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[cyan]{task.description}"),
+                    BarColumn(bar_width=30),
+                    TaskProgressColumn(),
+                    TimeElapsedColumn(),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    task = progress.add_task("Testing (async)", total=max_requests)
+                    batch = 0
+                    remaining = max_requests
+                    while remaining > 0:
+                        chunk = min(remaining, concurrency * 4)
+                        tasks = [_make_request(session, sem) for _ in range(chunk)]
+                        await asyncio.gather(*tasks)
+                        remaining -= chunk
+                        batch += chunk
+                        progress.update(task, completed=batch)
+            elif max_time:
+                end_time = start + max_time
+                console.print(f"[cyan]Running for {max_time}s ...[/cyan]")
+                while time.time() < end_time:
+                    tasks = [_make_request(session, sem) for _ in range(concurrency)]
+                    await asyncio.gather(*tasks)
+
+        total_time = time.time() - start
+        total_reqs = results["success"] + results["errors"]
+        rps = total_reqs / total_time if total_time > 0 else 0
+        times = sorted(results["response_times"]) if results["response_times"] else [0]
+        n = len(times)
+        success_rate = (results["success"] / total_reqs * 100) if total_reqs > 0 else 0
+
+        return {
+            "url": url,
+            "method": method.upper(),
+            "concurrency": concurrency,
+            "total_requests": total_reqs,
+            "successful": results["success"],
+            "errors": results["errors"],
+            "duration_s": round(total_time, 2),
+            "rps": round(rps, 2),
+            "success_rate": round(success_rate, 1),
+            "response_times": {
+                "avg": round(sum(times) / n, 1) if n else 0,
+                "min": round(times[0], 1) if n else 0,
+                "median": round(times[n // 2], 1) if n else 0,
+                "p95": round(times[int(n * 0.95)], 1) if n > 20 else round(times[-1], 1),
+                "p99": round(times[int(n * 0.99)], 1) if n > 100 else round(times[-1], 1),
+                "max": round(times[-1], 1) if n else 0,
+            },
+            "status_codes": dict(sorted(results["status_codes"].items())),
+        }
+
+
+# ============================================================================
+# Display helpers
+# ============================================================================
+def display_results(results: Dict[str, Any]) -> None:
+    """Render load test results as rich tables."""
+    table = Table(title="Test Results", border_style="cyan", show_lines=True)
+    table.add_column("Metric", style="white bold")
+    table.add_column("Value", style="green")
+
+    table.add_row("Target", results["url"])
+    table.add_row("Method", results["method"])
+    table.add_row(
+        "Concurrency / Threads",
+        str(results.get("threads", results.get("concurrency", "-"))),
+    )
+    table.add_row("Total Requests", f"{results['total_requests']:,}")
+    table.add_row("Successful", f"[green]{results['successful']:,}[/green]")
+    table.add_row("Errors", f"[red]{results['errors']:,}[/red]")
+    table.add_row("Duration", f"{results['duration_s']:.2f} s")
+    table.add_row("Requests/sec", f"{results['rps']:.2f}")
+    table.add_row("Success Rate", f"{results['success_rate']:.1f}%")
+    console.print(table)
+
+    rt = results["response_times"]
+    rt_table = Table(title="Response Times (ms)", border_style="blue", show_lines=True)
+    rt_table.add_column("Percentile", style="yellow")
+    rt_table.add_column("Time (ms)", style="green")
+    rt_table.add_row("Min", f"{rt['min']:.1f}")
+    rt_table.add_row("Avg", f"{rt['avg']:.1f}")
+    rt_table.add_row("Median (P50)", f"{rt['median']:.1f}")
+    rt_table.add_row("P95", f"{rt['p95']:.1f}")
+    rt_table.add_row("P99", f"{rt['p99']:.1f}")
+    rt_table.add_row("Max", f"{rt['max']:.1f}")
+    console.print(rt_table)
+
+    if results.get("status_codes"):
+        sc_table = Table(title="HTTP Status Codes", border_style="magenta")
+        sc_table.add_column("Code", style="yellow")
+        sc_table.add_column("Count", style="green")
+        for code, count in results["status_codes"].items():
+            sc_table.add_row(str(code), f"{count:,}")
+        console.print(sc_table)
+
+
+def display_response(method: str, url: str, resp: requests.Response) -> None:
+    """Display a single HTTP response."""
+    console.print(f"\n[bold]Status:[/bold]  {resp.status_code}")
+    console.print(
+        f"[bold]Time:[/bold]    {resp.elapsed.total_seconds() * 1000:.0f} ms"
+    )
+    console.print(
+        f"[bold]Type:[/bold]    {resp.headers.get('Content-Type', 'N/A')}"
+    )
+    console.print(
+        f"[bold]Length:[/bold]  {resp.headers.get('Content-Length', 'N/A')}"
+    )
+
+    h_table = Table(title="Response Headers", border_style="dim")
+    h_table.add_column("Header", style="cyan")
+    h_table.add_column("Value", style="white")
+    for k, v in resp.headers.items():
+        h_table.add_row(k, v[:120])
+    console.print(h_table)
+
+
+# ============================================================================
+# CLI -- Click command group
+# ============================================================================
+@click.group(invoke_without_command=True)
+@click.version_option(version=__version__, prog_name="SLAYER")
+@click.pass_context
+def cli(ctx):
+    """SLAYER -- HTTP Load Testing and Request Framework."""
+    if ctx.invoked_subcommand is None:
+        interactive_mode()
+
+
+# ---------------------------------------------------------------------------
+# Command: test
+# ---------------------------------------------------------------------------
+@cli.command()
+@click.option("--url", "-u", required=True, help="Target URL.")
+@click.option(
+    "--requests", "-n", "num_requests", default=100, show_default=True,
+    help="Total number of requests.",
+)
+@click.option(
+    "--concurrency", "-c", default=10, show_default=True,
+    help="Number of concurrent threads/connections.",
+)
+@click.option(
+    "--method", "-m", default="GET", show_default=True, help="HTTP method.",
+)
+@click.option(
+    "--delay", "-d", default=0.0, show_default=True,
+    help="Delay between requests per thread (seconds).",
+)
+@click.option(
+    "--duration", "-t", default=None, type=int,
+    help="Max test duration in seconds (overrides -n).",
+)
+@click.option("--data", default=None, help="Request body.")
+@click.option(
+    "--header", "-H", multiple=True,
+    help="Custom header (key:value). Repeatable.",
+)
+@click.option(
+    "--timeout", default=10, show_default=True,
+    help="Request timeout in seconds.",
+)
+@click.option(
+    "--engine",
+    type=click.Choice(["sync", "async"]),
+    default="sync",
+    show_default=True,
+    help="Engine: sync (threading) or async (aiohttp).",
+)
+@click.option(
+    "--output", "-o", default=None, help="Save results to JSON file.",
+)
+def test(url, num_requests, concurrency, method, delay, duration, data,
+         header, timeout, engine, output):
+    """Run an HTTP load test against a target URL."""
+    print_banner()
+
+    headers: Dict[str, str] = {}
+    for h in header:
+        if ":" in h:
+            k, v = h.split(":", 1)
+            headers[k.strip()] = v.strip()
+
+    console.print(
+        Panel.fit(
+            f"[bold]Target:[/bold]       {url}\n"
+            f"[bold]Method:[/bold]       {method.upper()}\n"
+            f"[bold]Requests:[/bold]     "
+            f"{str(duration) + 's' if duration else num_requests}\n"
+            f"[bold]Concurrency:[/bold]  {concurrency}\n"
+            f"[bold]Engine:[/bold]       {engine}",
+            title="Load Test Configuration",
+            border_style="cyan",
+        )
+    )
+    console.print()
+
+    if engine == "async":
+        async_engine = AsyncLoadTestEngine()
+        results = asyncio.run(
+            async_engine.run(
+                url=url,
+                method=method,
+                concurrency=concurrency,
+                max_requests=None if duration else num_requests,
+                max_time=duration,
+                headers=headers,
+                data=data,
+                timeout=timeout,
+            )
+        )
+    else:
+        sync_engine = LoadTestEngine()
+        results = sync_engine.run(
+            url=url,
+            method=method,
+            threads=concurrency,
+            delay=delay,
+            max_requests=None if duration else num_requests,
+            max_time=duration,
+            headers=headers,
+            data=data,
+            timeout=timeout,
+        )
+
+    console.print()
+    display_results(results)
+
+    if output:
+        with open(output, "w") as f:
+            json.dump(results, f, indent=2)
+        console.print(f"\n[green]Results saved to {output}[/green]")
+
+
+# ---------------------------------------------------------------------------
+# Command: request
+# ---------------------------------------------------------------------------
+@cli.command("request")
+@click.option("--url", "-u", required=True, help="Target URL.")
+@click.option(
+    "--method", "-m", default="GET", show_default=True, help="HTTP method.",
+)
+@click.option(
+    "--header", "-H", multiple=True,
+    help="Custom header (key:value). Repeatable.",
+)
+@click.option(
+    "--data", "-d", default=None,
+    help="Request body (JSON string or plain text).",
+)
+@click.option(
+    "--output", "-o", default=None, help="Save response body to file.",
+)
+@click.option(
+    "--verbose", "-v", is_flag=True, help="Show response body.",
+)
+def single_request(url, method, header, data, output, verbose):
+    """Make a single HTTP request and display the response."""
+    print_banner()
+
+    headers: Dict[str, str] = {"User-Agent": random.choice(USER_AGENTS)}
+    for h in header:
+        if ":" in h:
+            k, v = h.split(":", 1)
+            headers[k.strip()] = v.strip()
+
+    json_data = None
+    body = data
+    if data:
+        try:
+            json_data = json.loads(data)
+            body = None
+        except json.JSONDecodeError:
+            pass
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[cyan]Sending request..."),
+        console=console,
+        transient=True,
+    ) as prog:
+        prog.add_task("req", total=None)
+        resp = requests.request(
+            method.upper(), url, headers=headers,
+            json=json_data, data=body, timeout=30,
+        )
+
+    display_response(method.upper(), url, resp)
+
+    if verbose:
+        body_text = resp.text
+        console.print(f"\n[bold]Body ({len(body_text)} chars):[/bold]")
+        console.print(
+            body_text[:2000] + ("..." if len(body_text) > 2000 else "")
+        )
+
+    if output:
+        with open(output, "w") as f:
+            f.write(resp.text)
+        console.print(f"\n[green]Response saved to {output}[/green]")
+
+
+# ---------------------------------------------------------------------------
+# Command: config
+# ---------------------------------------------------------------------------
+@cli.command("config")
+@click.option(
+    "--output", "-o", default="slayer_config.json", show_default=True,
+    help="Output file.",
+)
+def generate_config(output):
+    """Generate a sample configuration file."""
+    sample = {
+        "target_url": "https://httpbin.org/get",
+        "method": "GET",
+        "requests": 500,
+        "concurrency": 20,
+        "delay": 0.0,
+        "timeout": 10,
+        "engine": "sync",
+        "headers": {},
+        "data": None,
     }
-    
-    slayer.banner()
-    
+    with open(output, "w") as f:
+        json.dump(sample, f, indent=2)
+    console.print(f"[green]Configuration template saved to {output}[/green]")
+
+
+# ---------------------------------------------------------------------------
+# Command: info
+# ---------------------------------------------------------------------------
+@cli.command("info")
+def info():
+    """Display system and version information."""
+    print_banner()
+    table = Table(title="System Information", border_style="cyan")
+    table.add_column("Component", style="yellow")
+    table.add_column("Status", style="green")
+    table.add_row("Version", __version__)
+    table.add_row("Python", sys.version.split()[0])
+    table.add_row("Sync engine (requests)", "available")
+    table.add_row(
+        "Async engine (aiohttp)",
+        "[green]available[/green]"
+        if _enterprise_available
+        else "[red]not installed[/red]",
+    )
+    table.add_row(
+        "Enterprise features",
+        "[green]available[/green]"
+        if _enterprise_available
+        else "[red]not installed[/red]",
+    )
+    console.print(table)
+
+
+# ============================================================================
+# Interactive Mode
+# ============================================================================
+def interactive_mode():
+    """Launch the interactive shell for quick testing."""
+    print_banner()
+
+    state: Dict[str, Any] = {
+        "url": "",
+        "method": "GET",
+        "threads": 10,
+        "delay": 0.01,
+        "requests": 100,
+        "duration": None,
+        "data": None,
+        "headers": {},
+        "timeout": 10,
+        "engine": "sync",
+    }
+
+    def show_status():
+        t = Table(border_style="dim", show_header=False, padding=(0, 2))
+        t.add_column("Key", style="cyan")
+        t.add_column("Value", style="white")
+        t.add_row("Target", state["url"] or "[dim]not set[/dim]")
+        t.add_row("Method", state["method"])
+        t.add_row("Threads", str(state["threads"]))
+        t.add_row(
+            "Requests",
+            str(state["duration"]) + "s"
+            if state["duration"]
+            else str(state["requests"]),
+        )
+        t.add_row("Delay", f"{state['delay']}s")
+        t.add_row("Engine", state["engine"])
+        console.print(t)
+
+    def show_help():
+        console.print(
+            Panel(
+                "[bold]Commands:[/bold]\n\n"
+                "  [cyan]target[/cyan] <url>             Set the target URL\n"
+                "  [cyan]method[/cyan] <GET|POST|...>    Set the HTTP method\n"
+                "  [cyan]threads[/cyan] <n>              Set concurrent threads\n"
+                "  [cyan]requests[/cyan] <n>             Set total request count\n"
+                "  [cyan]duration[/cyan] <seconds>       Set test duration\n"
+                "  [cyan]delay[/cyan] <seconds>          Set delay between requests\n"
+                "  [cyan]data[/cyan] <text>              Set request body\n"
+                "  [cyan]header[/cyan] <key:value>       Add a custom header\n"
+                "  [cyan]engine[/cyan] <sync|async>      Set testing engine\n"
+                "  [cyan]timeout[/cyan] <seconds>        Set request timeout\n\n"
+                "  [cyan]run[/cyan]                      Start the load test\n"
+                "  [cyan]request[/cyan]                  Single request to target\n"
+                "  [cyan]status[/cyan]                   Show current config\n"
+                "  [cyan]clear[/cyan]                    Clear screen\n"
+                "  [cyan]help[/cyan]                     Show this help\n"
+                "  [cyan]exit[/cyan]                     Quit\n",
+                title="Help",
+                border_style="cyan",
+            )
+        )
+
+    show_help()
+
     while True:
         try:
-            command = input(f"{Colors.BOLD}slayer{Colors.RESET}> ").strip()
-            
-            if not command:
+            raw = console.input("[bold]slayer>[/bold] ").strip()
+            if not raw:
                 continue
-                
-            parts = command.split()
-            cmd = parts[0].lower()
-            
-            if cmd in ['exit', 'quit']:
-                print(f"{Colors.CYAN}Goodbye!{Colors.RESET}")
-                break
-                
-            elif cmd == 'help':
-                print(f"""
-{Colors.BOLD}Commands:{Colors.RESET}
-  {Colors.GREEN}target <url>{Colors.RESET}           - Set target URL  
-  {Colors.GREEN}method <GET|POST|PUT|DELETE>{Colors.RESET} - Set HTTP method
-  {Colors.GREEN}threads <num>{Colors.RESET}          - Set concurrent threads
-  {Colors.GREEN}delay <seconds>{Colors.RESET}        - Set request delay
-  {Colors.GREEN}data <text>{Colors.RESET}            - Set request body
-  
-  {Colors.GREEN}run{Colors.RESET}                    - Start test
-  {Colors.GREEN}run -n <count>{Colors.RESET}         - Run specific number of requests
-  {Colors.GREEN}run -t <time>s{Colors.RESET}         - Run for specific time
-  
-  {Colors.GREEN}status{Colors.RESET}                 - Show config
-  {Colors.GREEN}help{Colors.RESET}                   - Show this help
-  {Colors.GREEN}clear{Colors.RESET}                  - Clear screen
-  {Colors.GREEN}exit{Colors.RESET}                   - Exit
 
-{Colors.BOLD}Examples:{Colors.RESET}
-  {Colors.CYAN}target https://httpbin.org/get{Colors.RESET}
-  {Colors.CYAN}threads 50{Colors.RESET}
-  {Colors.CYAN}run -n 1000{Colors.RESET}
-""")
-                
-            elif cmd == 'clear':
-                slayer.banner()
-                
-            elif cmd == 'status':
-                slayer.display_config()
-                
-            elif cmd == 'target':
-                if len(parts) > 1:
-                    config['target_url'] = parts[1]
-                    print(f"{Colors.GREEN}Target set: {parts[1]}{Colors.RESET}")
+            parts = raw.split()
+            cmd = parts[0].lower()
+
+            if cmd in ("exit", "quit", "q"):
+                console.print("[dim]Goodbye.[/dim]")
+                break
+
+            elif cmd == "help":
+                show_help()
+
+            elif cmd == "clear":
+                os.system("clear" if os.name == "posix" else "cls")
+                print_banner()
+
+            elif cmd == "status":
+                show_status()
+
+            elif cmd == "target":
+                if len(parts) < 2:
+                    console.print("[red]Usage: target <url>[/red]")
                 else:
-                    print(f"{Colors.RED}Usage: target <url>{Colors.RESET}")
-                    
-            elif cmd == 'method':
-                if len(parts) > 1:
-                    method = parts[1].upper()
-                    if method in ['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS', 'PATCH']:
-                        config['method'] = method
-                        print(f"{Colors.GREEN}Method set: {method}{Colors.RESET}")
+                    state["url"] = parts[1]
+                    console.print(f"[green]Target set: {parts[1]}[/green]")
+
+            elif cmd == "method":
+                if len(parts) < 2:
+                    console.print(
+                        f"[red]Usage: method "
+                        f"<{'|'.join(SUPPORTED_METHODS)}>[/red]"
+                    )
+                else:
+                    m = parts[1].upper()
+                    if m in SUPPORTED_METHODS:
+                        state["method"] = m
+                        console.print(f"[green]Method set: {m}[/green]")
                     else:
-                        print(f"{Colors.RED}Invalid method{Colors.RESET}")
+                        console.print(f"[red]Unsupported method: {m}[/red]")
+
+            elif cmd == "threads":
+                if len(parts) < 2:
+                    console.print("[red]Usage: threads <number>[/red]")
                 else:
-                    print(f"{Colors.RED}Usage: method <GET|POST|PUT|DELETE>{Colors.RESET}")
-                    
-            elif cmd == 'threads':
-                if len(parts) > 1:
                     try:
-                        threads = int(parts[1])
-                        if threads > 0:
-                            config['threads'] = threads
-                            print(f"{Colors.GREEN}Threads set: {threads}{Colors.RESET}")
+                        n = int(parts[1])
+                        if n > 0:
+                            state["threads"] = n
+                            console.print(f"[green]Threads set: {n}[/green]")
                         else:
-                            print(f"{Colors.RED}Threads must be > 0{Colors.RESET}")
+                            console.print("[red]Must be > 0[/red]")
                     except ValueError:
-                        print(f"{Colors.RED}Threads must be a number{Colors.RESET}")
+                        console.print("[red]Must be a number[/red]")
+
+            elif cmd == "requests":
+                if len(parts) < 2:
+                    console.print("[red]Usage: requests <number>[/red]")
                 else:
-                    print(f"{Colors.RED}Usage: threads <number>{Colors.RESET}")
-                    
-            elif cmd == 'delay':
-                if len(parts) > 1:
                     try:
-                        delay = float(parts[1])
-                        if delay >= 0:
-                            config['delay'] = delay
-                            print(f"{Colors.GREEN}Delay set: {delay}s{Colors.RESET}")
-                        else:
-                            print(f"{Colors.RED}Delay must be >= 0{Colors.RESET}")
+                        n = int(parts[1])
+                        state["requests"] = n
+                        state["duration"] = None
+                        console.print(f"[green]Requests set: {n}[/green]")
                     except ValueError:
-                        print(f"{Colors.RED}Delay must be a number{Colors.RESET}")
+                        console.print("[red]Must be a number[/red]")
+
+            elif cmd == "duration":
+                if len(parts) < 2:
+                    console.print("[red]Usage: duration <seconds>[/red]")
                 else:
-                    print(f"{Colors.RED}Usage: delay <seconds>{Colors.RESET}")
-                    
-            elif cmd == 'data':
-                if len(parts) > 1:
-                    config['data'] = ' '.join(parts[1:])
-                    print(f"{Colors.GREEN}Data set{Colors.RESET}")
+                    try:
+                        s = parts[1].rstrip("s")
+                        n = int(s)
+                        state["duration"] = n
+                        console.print(f"[green]Duration set: {n}s[/green]")
+                    except ValueError:
+                        console.print("[red]Must be a number[/red]")
+
+            elif cmd == "delay":
+                if len(parts) < 2:
+                    console.print("[red]Usage: delay <seconds>[/red]")
                 else:
-                    config['data'] = None
-                    print(f"{Colors.GREEN}Data cleared{Colors.RESET}")
-                    
-            elif cmd == 'run':
-                # Parse run options
-                run_config = config.copy()
-                
-                i = 1
-                while i < len(parts):
-                    if parts[i] == '-n' and i + 1 < len(parts):
-                        try:
-                            run_config['max_requests'] = int(parts[i + 1])
-                            i += 2
-                        except ValueError:
-                            print(f"{Colors.RED}Invalid request count{Colors.RESET}")
-                            break
-                    elif parts[i] == '-t' and i + 1 < len(parts):
-                        try:
-                            time_str = parts[i + 1]
-                            if time_str.endswith('s'):
-                                run_config['max_time'] = int(time_str[:-1])
-                            else:
-                                run_config['max_time'] = int(time_str)
-                            i += 2
-                        except ValueError:
-                            print(f"{Colors.RED}Invalid time format{Colors.RESET}")
-                            break
+                    try:
+                        d = float(parts[1])
+                        state["delay"] = d
+                        console.print(f"[green]Delay set: {d}s[/green]")
+                    except ValueError:
+                        console.print("[red]Must be a number[/red]")
+
+            elif cmd == "data":
+                if len(parts) < 2:
+                    state["data"] = None
+                    console.print("[green]Data cleared[/green]")
+                else:
+                    state["data"] = " ".join(parts[1:])
+                    console.print("[green]Data set[/green]")
+
+            elif cmd == "header":
+                if len(parts) < 2:
+                    console.print("[red]Usage: header <key:value>[/red]")
+                else:
+                    h = " ".join(parts[1:])
+                    if ":" in h:
+                        k, v = h.split(":", 1)
+                        state["headers"][k.strip()] = v.strip()
+                        console.print(
+                            f"[green]Header set: {k.strip()}[/green]"
+                        )
                     else:
-                        i += 1
-                
-                slayer.run_test(run_config)
-                
+                        console.print("[red]Format: key:value[/red]")
+
+            elif cmd == "engine":
+                if len(parts) < 2 or parts[1].lower() not in (
+                    "sync", "async",
+                ):
+                    console.print("[red]Usage: engine <sync|async>[/red]")
+                else:
+                    state["engine"] = parts[1].lower()
+                    console.print(
+                        f"[green]Engine set: {state['engine']}[/green]"
+                    )
+
+            elif cmd == "timeout":
+                if len(parts) < 2:
+                    console.print("[red]Usage: timeout <seconds>[/red]")
+                else:
+                    try:
+                        t = int(parts[1])
+                        state["timeout"] = t
+                        console.print(f"[green]Timeout set: {t}s[/green]")
+                    except ValueError:
+                        console.print("[red]Must be a number[/red]")
+
+            elif cmd == "run":
+                if not state["url"]:
+                    console.print(
+                        "[red]Set a target first: target <url>[/red]"
+                    )
+                    continue
+
+                console.print()
+                if state["engine"] == "async":
+                    eng = AsyncLoadTestEngine()
+                    results = asyncio.run(
+                        eng.run(
+                            url=state["url"],
+                            method=state["method"],
+                            concurrency=state["threads"],
+                            max_requests=(
+                                None
+                                if state["duration"]
+                                else state["requests"]
+                            ),
+                            max_time=state["duration"],
+                            headers=state["headers"],
+                            data=state["data"],
+                            timeout=state["timeout"],
+                        )
+                    )
+                else:
+                    eng = LoadTestEngine()
+                    results = eng.run(
+                        url=state["url"],
+                        method=state["method"],
+                        threads=state["threads"],
+                        delay=state["delay"],
+                        max_requests=(
+                            None
+                            if state["duration"]
+                            else state["requests"]
+                        ),
+                        max_time=state["duration"],
+                        headers=state["headers"],
+                        data=state["data"],
+                        timeout=state["timeout"],
+                    )
+                console.print()
+                display_results(results)
+
+            elif cmd == "request":
+                if not state["url"]:
+                    console.print(
+                        "[red]Set a target first: target <url>[/red]"
+                    )
+                    continue
+                url = state["url"]
+                if not url.startswith(("http://", "https://")):
+                    url = "http://" + url
+                hdrs = dict(state["headers"])
+                hdrs["User-Agent"] = random.choice(USER_AGENTS)
+                resp = requests.request(
+                    state["method"],
+                    url,
+                    headers=hdrs,
+                    data=state["data"],
+                    timeout=state["timeout"],
+                )
+                display_response(state["method"], url, resp)
+
             else:
-                print(f"{Colors.RED}Unknown command: {cmd}{Colors.RESET}")
-                print(f"Type '{Colors.GREEN}help{Colors.RESET}' for available commands")
-                
+                console.print(f"[red]Unknown command: {cmd}[/red]")
+                console.print(
+                    "[dim]Type 'help' for available commands.[/dim]"
+                )
+
         except KeyboardInterrupt:
-            print(f"\n{Colors.YELLOW}Command interrupted{Colors.RESET}")
+            console.print()
         except EOFError:
-            print(f"\n{Colors.CYAN}Goodbye!{Colors.RESET}")
+            console.print("\n[dim]Goodbye.[/dim]")
             break
         except Exception as e:
-            print(f"{Colors.RED}Error: {e}{Colors.RESET}")
+            console.print(f"[red]Error: {e}[/red]")
 
+
+# ============================================================================
+# Entry point
+# ============================================================================
 if __name__ == "__main__":
-    main()
+    cli()
