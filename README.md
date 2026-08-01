@@ -602,22 +602,3 @@ Timeout: 10 seconds
 ```
 
 Expected result: approximately 1500 requests over 30 seconds.
-
-## Reporting Issues
-
-If you run into a bug or have a suggestion:
-
-1. Open an issue on GitHub
-2. Describe the problem in detail
-3. Include the configuration you used
-4. Share the results and any error messages you saw
-
-## License
-
-No license has been chosen for this project yet. Until one is added, all
-rights are reserved by the author.
-
----
-
-For questions or additional support, review the examples above or open an
-issue on GitHub.
