@@ -293,11 +293,8 @@ class LoadTester:
     # ------------------------------------------------------------------
 
     def print_header(self):
-        """Display welcome header."""
-        print("\n" + "=" * 70)
-        print(f"{Colors.BOLD}SLAYER - HTTP Load Testing Tool{Colors.RESET}")
-        print(f"{Colors.DIM}A professional load testing solution{Colors.RESET}")
-        print("=" * 70 + "\n")
+        """Display the tool banner."""
+        print(f"\n{Colors.BOLD}{Colors.CYAN}SLAYER{Colors.RESET}\n")
 
     def print_separator(self, char="─", length=70):
         """Print a visual separator."""

@@ -8,26 +8,24 @@ can see how a server behaves under load.
 
 ## Features
 
-- Interactive configuration wizard with step-by-step guidance, plus a fully non-interactive CLI mode for automation and CI
-- Multiple traffic patterns: Constant, Ramp-up, and Spike, scheduled with sub-second precision
-- Response validation capabilities: HTTP status code verification and response content matching
+- Interactive configuration wizard, plus a non-interactive CLI mode for automation and CI
+- Three traffic patterns: constant rate, gradual ramp-up, and short spikes
+- Response validation: check the status code, or search the response body for a keyword
 - Custom headers, JSON/plain-text request bodies, Bearer token and HTTP Basic authentication
 - SSL certificate verification toggle for self-signed/internal targets
-- Connection reuse (pooled `requests.Session`) so the tool itself isn't the bottleneck under high concurrency
-- Two execution engines: OS threads (default, up to 1000 concurrent) or an aiohttp-based async engine for a
-  substantially higher requests/sec ceiling on the same hardware
-- Save/load test configuration as JSON, and export the final report as JSON
-- Multi-endpoint scenarios with weighted request selection and a per-endpoint report breakdown
-- Multi-step, session-aware flows: extract values from one response, reuse them (and cookies) in the next step, abort the flow early on failure
-- Parameterized request data (`{{uuid}}`, `{{random_int}}`, `{{timestamp}}`, `{{counter}}`) usable in bodies/headers on any test
-- Optional warm-up period excluded from measured statistics
-- CI-friendly exit codes (`--fail-on-error-rate`, `--fail-on-p95`, `--fail-on-p99`, `--fail-on-avg-latency`)
+- Two execution modes: the default, and a higher-throughput mode (`--engine async`) for pushing significantly more requests per second
+- Save and load test configurations as JSON, and export the final report as JSON
+- Multi-endpoint scenarios: hit several URLs in one test, weighted however you like
+- Multi-step flows: log in, carry the resulting token/cookie into the next request, stop early if a step fails
+- Parameterized request data (random IDs, timestamps, counters) so repeated requests aren't byte-identical
+- Optional warm-up period that isn't counted in the results
+- Exit codes tied to pass/fail thresholds, for use as a CI gate
 - An explicit authorization confirmation before every test run (see "Responsible Use" below)
-- Real-time monitoring with reports every 10 seconds, including a live latency/RPS trend sparkline
-- Comprehensive statistics including minimum, maximum, average, median, P95, and P99 latencies
-- Support for multiple HTTP methods: GET, POST, PUT, PATCH, DELETE
-- Concurrent connection control up to 1000 simultaneous threads (or in-flight requests in async mode)
-- Detailed error breakdown: timeouts, connection failures, and validation errors
+- Real-time reports every 10 seconds, including a small trend chart for latency and RPS
+- A final report with request counts, status code distribution, and latency percentiles (min, max, average, median, p95, p99)
+- Support for GET, POST, PUT, PATCH, and DELETE
+- Up to 1000 concurrent connections
+- A detailed error breakdown: timeouts, connection failures, and validation failures
 
 ## Responsible Use
 
@@ -44,7 +42,7 @@ has already been established out of band.
 ### Requirements
 
 - Python 3.9 or higher
-- The requests library
+- The `requests` library
 - `aiohttp` (optional, only needed for `--engine async`): `pip install aiohttp`
 
 ### Installation Options
@@ -96,11 +94,67 @@ slayer
 
 ## Usage
 
+There are two ways to run a test: the interactive wizard (just run
+`python3 slayer.py` with no arguments) or the non-interactive CLI mode
+(pass `--url`, `--scenario`, or `--config`). Both configure and run the
+exact same underlying test — pick whichever fits what you're doing.
+
+### Interactive Mode
+
+```bash
+python3 slayer.py
+```
+
+You'll see a menu:
+
+```
+SLAYER
+
+Welcome to SLAYER Load Testing Tool.
+Please configure your test to begin.
+
+What would you like to do
+  1. Configure New Test
+  2. Exit
+```
+
+Choosing "Configure New Test" walks you through, in order: the target URL,
+HTTP method, execution engine, concurrency, duration, warm-up period,
+traffic pattern (with its own follow-up questions), response validation,
+request timeout, custom headers, request body, authentication, and SSL
+verification. Every step tells you the valid range or choices and won't
+let you continue until you enter something valid, so it's hard to get
+stuck.
+
+Once configuration is done, the menu changes:
+
+```
+What would you like to do
+  1. View Configuration
+  2. Modify Configuration
+  3. Run Test
+  4. Reset Configuration
+  5. Exit
+```
+
+- **View Configuration** shows everything you've set (secrets like tokens
+  and passwords are hidden).
+- **Modify Configuration** re-runs the wizard so you can change settings.
+- **Run Test** asks you to confirm you're authorized to load-test the
+  target, then runs it and shows a live report every 10 seconds, followed
+  by the final report. You'll also be offered the chance to export that
+  report to a JSON file.
+- **Reset Configuration** clears everything so you can start over.
+
+At the end of the wizard you're also offered the chance to save your
+configuration to a JSON file, so you can reload it later instead of
+re-entering everything (see "Configuration Files" below).
+
 ### Non-Interactive (CLI) Mode
 
-Passing `--url` (or `--config`) skips the interactive wizard entirely and runs
-a single test from command-line flags — ideal for CI pipelines and scripted
-runs.
+Passing `--url` (or `--scenario`/`--config`) skips the wizard entirely and
+runs a single test straight from command-line flags — this is the mode to
+use in scripts, cron jobs, or CI pipelines.
 
 ```bash
 python3 slayer.py \
@@ -118,39 +172,61 @@ python3 slayer.py \
   --yes
 ```
 
-Key flags:
+Every flag:
 
-| Flag | Purpose |
-|------|---------|
-| `--url` | Target URL (required, unless supplied via `--config`) |
-| `--method` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
-| `--threads` | Concurrency (1-1000): OS threads, or in-flight requests with `--engine async` |
-| `--engine` | `threads` (default) or `async` (aiohttp, higher RPS ceiling — see below) |
-| `--duration` | Test duration in seconds (1-3600) |
-| `--pattern` | `constant`, `ramp-up`, or `spike` |
+| Flag | What it does |
+|------|--------------|
+| `--url` | The target URL (required, unless you supply `--scenario` or `--config` instead) |
+| `--method` | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, or `DELETE` |
+| `--threads` | How many requests run at once, from 1 to 1000 |
+| `--engine` | `threads` (default) or `async` — see "Which engine should I use?" below |
+| `--duration` | How long the test runs, in seconds (1-3600) |
+| `--pattern` | Traffic shape: `constant`, `ramp-up`, or `spike` |
 | `--rps` | Target requests per second |
-| `--start-rps` / `--spike-duration` | Pattern-specific parameters |
-| `--timeout` | Per-request timeout in seconds |
-| `--validation` | `none`, `status`, or `content` (with `--validation-keyword`) |
-| `--header "Key: Value"` | Custom header, repeatable |
-| `--body` / `--body-file` | Request body (use with `--json-body` to parse/send as JSON) |
-| `--auth-bearer` | Sets an `Authorization: Bearer <token>` header |
-| `--auth-basic user:password` | HTTP Basic authentication |
-| `--insecure` | Disable SSL certificate verification |
-| `--config path.json` | Load a base configuration (CLI flags override it) |
-| `--scenario path.json` | Weighted multi-endpoint targets (see below); takes precedence over `--url` |
-| `--warmup` | Seconds of traffic sent before measurements start (excluded from the report) |
-| `--save-config path.json` | Save the resulting configuration for reuse |
-| `--output report.json` | Export the final report as JSON |
-| `--fail-on-error-rate PCT` / `--fail-on-p95 MS` / `--fail-on-p99 MS` / `--fail-on-avg-latency MS` | Exit with status `2` if the finished test breaches a threshold — for CI gating |
-| `--yes` / `-y` | Skip the authorization confirmation prompt (automation only) |
-| `--log-file` / `--verbose` | Diagnostic logging |
-| `--no-color` | Disable ANSI colors (also auto-disabled when not attached to a tty) |
+| `--start-rps` | Starting RPS for `--pattern ramp-up` |
+| `--spike-duration` | How long the spike lasts, for `--pattern spike` |
+| `--timeout` | How long to wait for a response before giving up, in seconds |
+| `--validation` | `none`, `status` (require a 2xx response), or `content` (require a keyword in the body) |
+| `--validation-keyword` | The keyword to look for, with `--validation content` |
+| `--header "Key: Value"` | Add a custom header; repeat the flag to add more than one |
+| `--body` | The request body to send |
+| `--body-file` | Read the request body from a file instead of typing it inline |
+| `--json-body` | Send `--body`/`--body-file` as JSON instead of plain text |
+| `--auth-bearer` | Adds an `Authorization: Bearer <token>` header for you |
+| `--auth-basic user:password` | Use HTTP Basic authentication |
+| `--insecure` | Skip SSL certificate verification (for self-signed certs) |
+| `--config path.json` | Load settings from a saved configuration file |
+| `--scenario path.json` | Test multiple endpoints or multi-step flows instead of one URL — see below |
+| `--warmup` | Send traffic for this many seconds before the test starts counting results |
+| `--save-config path.json` | Save the settings from this run to a file, to reuse later |
+| `--output report.json` | Write the final report to a JSON file |
+| `--fail-on-error-rate PCT` | Exit with an error if the error rate goes above `PCT` percent |
+| `--fail-on-p95 MS` | Exit with an error if the 95th percentile latency goes above `MS` milliseconds |
+| `--fail-on-p99 MS` | Exit with an error if the 99th percentile latency goes above `MS` milliseconds |
+| `--fail-on-avg-latency MS` | Exit with an error if the average latency goes above `MS` milliseconds |
+| `--yes` / `-y` | Skip the authorization confirmation prompt (use only in automated pipelines) |
+| `--log-file` | Write detailed logs to this file |
+| `--verbose` | Print detailed logs to the screen as the test runs |
+| `--no-color` | Turn off colored output |
 
-### Multi-Endpoint Scenarios
+#### Which engine should I use?
 
-Real traffic rarely hits one fixed URL. `--scenario scenario.json` points at a
-JSON array of weighted request definitions instead of a single `--url`:
+Leave `--engine` on its default (`threads`) unless you've tried a test and
+it's not reaching the RPS you asked for even with the target server
+responding fine — that's the sign you need more raw throughput than the
+default mode can produce on your machine. In that case, install `aiohttp`
+(`pip install aiohttp`) and add `--engine async`. Everything else about the
+test (flags, scenario files, reports) works exactly the same either way.
+One thing to know: with `--engine async`, `--threads` means "how many
+requests can be in flight at once" rather than literal OS threads, and any
+requests still running when the test's duration ends are stopped
+immediately rather than allowed to finish (the default `threads` mode lets
+them finish).
+
+### Testing More Than One Endpoint
+
+Real traffic rarely hits one fixed URL. Instead of `--url`, point
+`--scenario` at a JSON file listing several endpoints:
 
 ```json
 [
@@ -160,18 +236,24 @@ JSON array of weighted request definitions instead of a single `--url`:
 ]
 ```
 
-Each request during the test picks one entry at random, proportionally to its
-`weight` (an entry with `weight: 3` is chosen 3x as often as one with
-`weight: 1`). Per-entry `headers`, `json_body`, `raw_body`, `validation_type`,
-and `validation_keyword` override the global config for that entry only. The
-final report includes a per-endpoint breakdown (requests, successes,
-failures) alongside the aggregate statistics.
+Each request during the test picks one entry at random, in proportion to
+its `weight` — here, `list-users` is picked three times as often as
+`create-order`. Each entry can have its own `headers`, `json_body`,
+`raw_body`, `validation_type`, and `validation_keyword`; anything you don't
+set for an entry falls back to the value from your regular flags. The
+final report breaks results down per endpoint as well as showing the
+combined totals.
 
-### Multi-Step Flows (Session-Aware Scenarios)
+```bash
+python3 slayer.py --scenario endpoints.json --threads 50 --duration 60 --rps 100 --yes
+```
 
-Real traffic is rarely one isolated request — a user logs in, then acts on
-what that returned. A scenario entry can define `steps` instead of a flat
-`url`, to run an ordered sequence as a single unit of work:
+### Multi-Step Flows
+
+Real usage is rarely a single isolated request — someone logs in, then
+does something with what that returned. A scenario entry can define
+`steps` instead of a flat `url`, to run a sequence of requests together as
+one unit:
 
 ```json
 [
@@ -196,38 +278,44 @@ what that returned. A scenario entry can define `steps` instead of a flat
 ]
 ```
 
-- **`extract`** pulls a value out of the previous step's JSON response body
-  using a small dotted/bracket path (`"token"`, `"data.user.id"`,
-  `"items[0].id"`) and stores it under the given variable name.
-- Later steps reference it with `{{token}}` in the URL, headers, or body.
-- **Cookies carry over automatically** between steps in the same flow
-  (like a browser session), isolated per flow execution — concurrent
-  "virtual users" never see each other's cookies or extracted variables.
-- **A step that fails** (non-2xx status, failed validation, or a value that
-  couldn't be extracted) **stops the rest of that flow** — a login failure
-  means the dependent steps never run, matching how a real client behaves.
-- A flat entry (no `steps` key) still works exactly as before — it's treated
-  as a one-step flow.
-- With multi-step flows, `--rps`/the traffic pattern controls how many new
-  flow executions start per second, not raw HTTP requests — a flow with 2
-  steps generates roughly 2x as many actual HTTP requests as its start rate.
+How to read this:
+
+- `"extract": {"token": "token"}` on the first step takes the `token` field
+  out of that step's JSON response and remembers it.
+- The second step uses `{{token}}` to insert that remembered value into its
+  own header. You can use `{{token}}` the same way in a URL or body.
+- Cookies set by one step are automatically sent with the next step, so a
+  login that sets a session cookie "just works" for the following requests
+  — you don't need to configure that yourself.
+- If a step fails (a non-2xx response, a failed validation, or a value
+  that couldn't be found to extract), the rest of that flow is skipped for
+  that run — a failed login means the order request is never attempted.
+- A scenario entry without `steps` still works exactly like before; it's
+  just treated as a one-step flow.
+- One thing worth knowing when you set `--rps`: with multi-step flows, that
+  number controls how many *flows* start per second, not how many raw HTTP
+  requests are sent. A 2-step flow will produce roughly twice as many
+  actual requests as the number you set.
+
+`extract` paths support nesting and array indexes, e.g. `"data.user.id"`
+or `"items[0].id"`.
 
 ### Parameterized Request Data
 
-The same `{{...}}` templating used for flow variables also supports built-in
-generators, usable in `--body`, `--header`, or any scenario/step field —
-including outside multi-step flows, on a plain single-endpoint test:
+You can also insert generated values into `--body`, `--header`, or any
+scenario/step field, without needing a multi-step flow:
 
 | Placeholder | Produces |
 |-------------|----------|
-| `{{uuid}}` | A random UUID4 string |
-| `{{random_int}}` | A random integer, 1–1,000,000 |
-| `{{random_int:MIN:MAX}}` | A random integer in `[MIN, MAX]` |
-| `{{timestamp}}` | The current Unix timestamp |
-| `{{counter}}` | A thread-safe, run-wide incrementing integer |
+| `{{uuid}}` | A random unique ID |
+| `{{random_int}}` | A random whole number between 1 and 1,000,000 |
+| `{{random_int:MIN:MAX}}` | A random whole number between `MIN` and `MAX` |
+| `{{timestamp}}` | The current time |
+| `{{counter}}` | A number that goes up by one every time it's used |
 
-This avoids sending byte-identical repeated requests (which can skew results
-via caching) and lets a single endpoint simulate distinct users/records:
+This is useful any time you don't want to send the exact same request
+repeatedly (which can quietly get cached and stop testing what you think
+it's testing), or want to simulate distinct users/records:
 
 ```bash
 python3 slayer.py --url https://api.example.com/users \
@@ -235,18 +323,23 @@ python3 slayer.py --url https://api.example.com/users \
   --duration 30 --rps 50 --yes
 ```
 
-### Warm-Up Period
+### Warming Up Before Measuring
 
-`--warmup 10` (CLI) or the wizard's "Warm-up period" prompt sends traffic for
-that many seconds *before* the measured phase starts, without recording it in
-the statistics — useful for letting connection pools, caches, or JIT-warmed
-backends reach steady state before you start measuring. Ramp-up tests warm up
-at the starting RPS; other patterns warm up at the target RPS.
+`--warmup 10` (or the wizard's "Warm-up period" question) sends traffic
+for that many seconds before the test starts counting anything — useful if
+the first few seconds of a test tend to be artificially slow (a cold
+cache, a server still starting up its worker processes, etc.) and you
+don't want that to skew your results.
 
-### CI Gating with Exit Codes
+```bash
+python3 slayer.py --url https://api.example.com/endpoint --warmup 10 --duration 60 --rps 100 --yes
+```
+
+### Using Exit Codes in CI
 
 `--fail-on-error-rate`, `--fail-on-p95`, `--fail-on-p99`, and
-`--fail-on-avg-latency` let a test act as a pass/fail gate in a pipeline:
+`--fail-on-avg-latency` let you use a test as a pass/fail gate in a
+pipeline, instead of having to read the report yourself:
 
 ```bash
 python3 slayer.py --url https://staging.example.com/health \
@@ -254,88 +347,48 @@ python3 slayer.py --url https://staging.example.com/health \
   --fail-on-error-rate 1 --fail-on-p95 500
 ```
 
-Exit codes: `0` = test completed and all thresholds passed, `1` = a
-configuration/input error prevented the test from running, `2` = the test
-ran but breached one or more thresholds. Any thresholds you passed are also
-recorded in the exported report under `threshold_failures`.
+What each exit code means:
 
-### Configuration Files
+- `0` — the test ran and stayed within every threshold you set
+- `1` — something was wrong with the setup (bad flags, an invalid URL, a
+  missing file) and the test never ran
+- `2` — the test ran, but broke one or more of the thresholds you set
 
-Both modes can save/load configuration as JSON:
+If you also pass `--output`, the exported report includes which
+thresholds (if any) were broken, under `threshold_failures`.
 
-- Interactive wizard: choose "Save this configuration to a file" at the end
-  of setup, or "Load Configuration From File" from the main menu.
-- CLI: `--save-config out.json` writes the config used for a run;
-  `--config out.json` loads it back (any CLI flag passed alongside overrides
-  the loaded value).
+### Saving and Reusing Configurations
 
-Custom headers, bearer tokens, and Basic Auth credentials are stored in
-plaintext in these files since they're needed to replay the test — keep saved
-configs out of version control if they contain secrets.
+Rather than typing out the same flags every time, you can save a
+configuration once and reuse it:
 
-### Exporting Reports
+- In the wizard: choose "Save this configuration to a file" at the end of
+  setup, and later pick "Load Configuration From File" from the main menu
+  to bring it back.
+- On the command line: `--save-config out.json` writes down the settings
+  used for that run; `--config out.json` loads them back on a later run.
+  Any flag you also pass alongside `--config` overrides the saved value
+  for just that run.
 
-`--output report.json` (CLI) or the "Export this report to a JSON file" prompt
-(interactive) writes the final statistics — status code distribution,
-latency percentiles, throughput, error breakdown — as JSON for downstream
-processing (dashboards, CI gates, historical comparison). Request headers,
-auth credentials, and body payloads are intentionally excluded from exported
-reports.
+Custom headers, tokens, and passwords are stored in these files as plain
+text, since the tool needs them to replay the test — keep saved
+configuration files out of version control if they contain anything
+sensitive.
 
-### Interactive Mode
+### Exporting the Report
 
-```bash
-python3 slayer.py
-```
-
-The tool will guide you through an interactive menu:
-
-```
-======================================================================
-SLAYER - HTTP Load Testing Tool
-A professional load testing solution
-======================================================================
-
-Welcome to SLAYER Load Testing Tool.
-Please configure your test to begin.
-
-What would you like to do
-  1. Configure New Test
-  2. Exit
-```
-
-### Configuration Steps
-
-Picking "Configure New Test" walks you through the same options the CLI
-flags cover above, in order: target URL, HTTP method, execution engine,
-concurrency, duration, warm-up period, traffic pattern (with its
-pattern-specific follow-up questions), response validation, request
-timeout, custom headers, request body, authentication, and SSL
-verification. Every step validates its input before moving on and shows
-the allowed range or choices, so it's hard to get stuck.
-
-Once configuration is done, the main menu lets you view or modify it,
-run the test, reset it, or exit:
-
-```
-What would you like to do
-  1. View Configuration
-  2. Modify Configuration
-  3. Run Test
-  4. Reset Configuration
-  5. Exit
-```
-
-Running the test asks you to confirm you're authorized to load-test the
-configured target before it sends a single request.
-
----
+Add `--output report.json` (or answer "Yes" to the export prompt in the
+wizard) to write the final report — request counts, status codes, latency
+percentiles, error breakdown — out as a JSON file, for feeding into a
+dashboard or comparing against previous runs. Headers, credentials, and
+request bodies are deliberately left out of the exported file.
 
 ## Understanding Results
 
-### Real-time Report
+### The Live Report
 
-Every 10 seconds during the test, you will see:
+Every 10 seconds while the test is running, you'll see something like
+this:
 
 ```
 [████████░░░░░░░░░░░░░░░░░░░░░░] 30%
@@ -356,16 +409,17 @@ Latency Statistics (ms)
   99th Percentile (p99).... 2100.45 ms
 ```
 
-Interpretation:
-- Total Requests: Count of HTTP requests made
-- Successful: Responses with 2xx status code
-- Failed: Errors including 5xx codes, 4xx codes, timeouts, etc.
-- Error Rate: Percentage of failed requests
-- Latencies: Response times in milliseconds
+- **Total Requests**: how many requests have been made so far
+- **Successful**: how many got back a 2xx status code
+- **Failed**: everything else — 4xx/5xx responses, timeouts, connection
+  errors, or a response that failed validation
+- **Error Rate**: failed ÷ total, as a percentage
+- **Latencies**: how long requests are taking to come back, in
+  milliseconds
 
-### Final Report
+### The Final Report
 
-Upon completion, a comprehensive summary is provided:
+When the test ends, you get a full summary:
 
 ```
 Test Summary
@@ -394,7 +448,14 @@ Error Summary
   Timeout.............. 6
 ```
 
----
+If you asked for more RPS than the test could actually sustain, you'll
+also see a "Cancelled (unsent)" line here — it means the target couldn't
+be hit as fast as you asked, so some planned requests were dropped instead
+of being sent late. If you see this, either lower `--rps` or raise
+`--threads` (or switch to `--engine async` — see above).
+
+If you used `--scenario`, you'll also see a per-endpoint breakdown showing
+requests, successes, and failures for each entry separately.
 
 ## Use Cases
 
@@ -444,26 +505,24 @@ Pattern: Constant
 Validation: Check status code
 ```
 
----
-
 ## Metrics Explained
 
-### Latency Metrics
+### Latency
 
-- Minimum: Fastest response time
-- Maximum: Slowest response time
-- Average: Mean of all response times
-- Median (p50): 50 percent of requests were faster than this value
-- P95: 95 percent of requests were faster (5 percent were slower)
-- P99: 99 percent of requests were faster (1 percent were slower)
+- **Minimum**: the fastest response time seen
+- **Maximum**: the slowest response time seen
+- **Average**: the mean of all response times
+- **Median (p50)**: half of all requests were faster than this
+- **P95**: 95% of requests were faster than this (5% were slower)
+- **P99**: 99% of requests were faster than this (1% were slower)
 
 What counts as a "good" latency depends entirely on the endpoint you're
-testing, so treat these as raw numbers to compare against your own baseline
-or SLA rather than a universal scale.
+testing — compare these numbers against your own baseline or SLA rather
+than treating them as universally good or bad.
 
 ### Throughput
 
-Actual requests per second processed by the server.
+How many requests per second the target actually handled:
 
 ```
 Throughput = Total Requests / Duration
@@ -471,38 +530,32 @@ Throughput = Total Requests / Duration
 
 ### Error Rate
 
-Percentage of requests that failed.
-
 ```
 Error Rate = (Failed / Total) * 100
 ```
 
-Again, an acceptable error rate depends on the service and how it fails
-(timeouts vs. clean 4xx/5xx vs. validation mismatches) — check the error
-breakdown, not just the percentage.
-
----
+What counts as an acceptable error rate also depends on the service and
+how it's failing — check the error breakdown (timeouts vs. clean 4xx/5xx
+vs. validation mismatches), not just the percentage.
 
 ## Troubleshooting
 
-### Connection Refused Error
+### Connection Refused
 
 ```
 Error: ConnectionError
 ```
 
-Solution: Verify that the URL is accessible and the server is online
+Check that the URL is reachable and the target server is actually
+running.
 
-### High Timeout Rate
+### A High Timeout Rate
 
 ```
 Timeout.............. 50
 ```
 
-Solutions:
-- Increase the timeout value in configuration
-- Reduce the number of threads
-- Lower the target RPS
+Try increasing `--timeout`, lowering `--threads`, or lowering `--rps`.
 
 ### Too Many Requests (429)
 
@@ -510,10 +563,7 @@ Solutions:
 HTTP 429................. 100
 ```
 
-Solutions:
-- The target server implements rate limiting
-- Reduce the RPS value
-- Increase the delay between requests
+The target is rate-limiting you. Lower `--rps` to stay under its limit.
 
 ### 502 Bad Gateway
 
@@ -521,63 +571,24 @@ Solutions:
 HTTP 502................. 15
 ```
 
-Solutions:
-- Backend server is overloaded
-- Reduce the number of threads
-- Distribute load over a longer duration
+The backend is overloaded. Try lowering `--threads`, or spread the same
+number of requests over a longer `--duration`.
 
----
+### "Cancelled (unsent)" in the Final Report
 
-## Performance Notes
-
-- Requests reuse a pooled, keep-alive `requests.Session` for the whole test
-  instead of opening a new TCP/TLS connection per request, so the tool itself
-  is far less likely to be the bottleneck at high concurrency.
-- Traffic is scheduled in 0.1s sub-intervals rather than dumped once per
-  second, which keeps Ramp-up and Spike patterns much closer to their
-  intended curve and avoids bursty, uneven request timing.
-- If the target RPS exceeds what the configured thread count can sustain, a
-  backlog warning is printed during the test, and any requests still queued
-  when the test ends are cancelled rather than run to exhaustion — the final
-  report shows how many were cancelled.
-
-### Execution Engines: Threads vs. Async
-
-By default SLAYER uses OS threads (`--engine threads`, the default): each
-thread blocks on `requests` while waiting for a response. This is simple and
-works well up to a few hundred/low thousands of RPS, but every thread carries
-real memory and context-switching overhead, which becomes the limiting
-factor before most target servers do.
-
-`--engine async` switches to an `aiohttp`-based event loop: a single thread
-holds many requests in flight cooperatively, so `--threads` (which becomes
-"max concurrent in-flight requests" in this mode, not OS threads) can go much
-higher for the same CPU/memory cost. Use it when you need to push
-significantly higher RPS than the threads engine sustains on your hardware,
-or when profiling shows thread overhead — not connection speed — is capping
-your test.
-
-Requires `aiohttp` (`pip install aiohttp`); the tool falls back to a clear
-error message (CLI) or a graceful engine fallback (interactive wizard) if
-it isn't installed. Behavioral difference to note: at test end, the async
-engine cancels *all* outstanding requests — including ones already in
-flight — to respect the configured duration exactly, whereas the threads
-engine lets already-started requests finish and only cancels queued ones.
+You asked for more RPS than the test could actually deliver. Lower `--rps`,
+raise `--threads`, or switch to `--engine async`.
 
 ## Best Practices
 
-1. Start with small numbers: Begin testing with 10-20 threads before scaling up
-2. Review configuration carefully: Double-check all settings before starting
-3. Monitor during execution: Observe server response behavior in real-time
-4. Analyze patterns: Look for trends in latencies and error rates
-5. Iterate and adjust: Modify parameters based on test results
-6. Respect rate limits: Always operate within the target service's constraints
-
----
+1. Start small — begin with 10-20 threads before scaling up
+2. Double-check your configuration before starting, especially the target URL
+3. Watch the live report while the test runs instead of only checking the end
+4. Look for trends in latency and error rate over time, not just the final numbers
+5. Adjust one parameter at a time between runs so you know what changed the result
+6. Stay within whatever rate limits the target service has told you it can handle
 
 ## Configuration Example
-
-### Manual Configuration
 
 ```
 URL: https://httpbin.org/get
@@ -590,20 +601,16 @@ Validation: Check status code
 Timeout: 10 seconds
 ```
 
-Expected Result: Approximately 1500 requests over 30 seconds
-
----
+Expected result: approximately 1500 requests over 30 seconds.
 
 ## Reporting Issues
 
-If you encounter a bug or have suggestions:
+If you run into a bug or have a suggestion:
 
 1. Open an issue on GitHub
-2. Provide a detailed description of the problem
-3. Include your test configuration
-4. Share the results and error messages
-
----
+2. Describe the problem in detail
+3. Include the configuration you used
+4. Share the results and any error messages you saw
 
 ## License
 
